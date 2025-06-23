@@ -1,11 +1,11 @@
 import asyncio
+from bleak import BleakScanner
 import socket
 import signal
 import sys
 import uuid
 import platform
 
-#  Configurazione beacon
 BEACONS = {
     "C1:4F:64:D9:F2:80": "014522",
     "C0:7E:31:1C:E3:A9": "014573",
@@ -17,7 +17,6 @@ UDP_PORT = 5005
 SCAN_INTERVAL = 15
 BROADCAST_INTERVAL = 5
 
-#  Rileva il sistema operativo
 if platform.system() == "Windows":
     MESSAGGIO_PERSONALIZZATO = "Sono il Windows"
     BROADCAST_IP = "192.168.1.255"
@@ -56,3 +55,41 @@ class BeaconCommander:
             self.sock_send.close()
         except:
             pass
+
+    async def scan_beacons(self):
+        while self.running:
+            try:
+                devices = await BleakScanner.discover(timeout=1.5, return_adv=True)
+                found = []
+
+                for d, adv in devices.values():
+                    if d.address in BEACONS or (d.name and d.name.startswith("BlueUp-")):
+                        beacon_id = BEACONS.get(d.address, "Sconosciuto")
+                        found.append((beacon_id, adv.rssi))
+
+                if found:
+                    found.sort(key=lambda x: x[1], reverse=True)
+                    closest = found[0][0]
+                    async with self.lock:
+                        if closest != self.current_beacon:
+                            self.current_beacon = closest
+                else:
+                    async with self.lock:
+                        self.current_beacon = None
+
+                await asyncio.sleep(SCAN_INTERVAL)
+            except asyncio.CancelledError:
+                break
+            except:
+                await asyncio.sleep(SCAN_INTERVAL)
+
+    async def broadcast_message(self):
+        while self.running:
+            async with self.lock:
+                if self.current_beacon:
+                    msg = f"{self.current_beacon}|{self.sender_id}|{MESSAGGIO_PERSONALIZZATO}"
+                    try:
+                        self.sock_send.sendto(msg.encode(), (BROADCAST_IP, UDP_PORT))
+                    except:
+                        pass
+            await asyncio.sleep(BROADCAST_INTERVAL)
