@@ -6,6 +6,7 @@ import sys
 import uuid
 import platform
 
+#  Configurazione beacon
 BEACONS = {
     "C1:4F:64:D9:F2:80": "014522",
     "C0:7E:31:1C:E3:A9": "014573",
@@ -17,6 +18,7 @@ UDP_PORT = 5005
 SCAN_INTERVAL = 15
 BROADCAST_INTERVAL = 5
 
+#  Rileva il sistema operativo
 if platform.system() == "Windows":
     MESSAGGIO_PERSONALIZZATO = "Sono il Windows"
     BROADCAST_IP = "192.168.1.255"
@@ -70,23 +72,17 @@ class BeaconCommander:
                 if found:
                     found.sort(key=lambda x: x[1], reverse=True)
                     closest = found[0][0]
-
-                    print(f"[SCANSIONE] Beacon trovati: {found}")
-                    print(f"[SCANSIONE] Beacon più vicino: {closest}")
-
                     async with self.lock:
                         if closest != self.current_beacon:
                             self.current_beacon = closest
                 else:
-                    print("[SCANSIONE] Nessun beacon rilevato.")
                     async with self.lock:
                         self.current_beacon = None
 
                 await asyncio.sleep(SCAN_INTERVAL)
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                print(f"[ERRORE] Durante la scansione: {e}")
+            except:
                 await asyncio.sleep(SCAN_INTERVAL)
 
     async def broadcast_message(self):
@@ -96,22 +92,54 @@ class BeaconCommander:
                     msg = f"{self.current_beacon}|{self.sender_id}|{MESSAGGIO_PERSONALIZZATO}"
                     try:
                         self.sock_send.sendto(msg.encode(), (BROADCAST_IP, UDP_PORT))
-                    except Exception as e:
-                        print(f"[ERRORE] Durante il broadcast: {e}")
+                    except:
+                        pass
             await asyncio.sleep(BROADCAST_INTERVAL)
+
+    async def listen_for_messages(self):
+        while self.running:
+            try:
+                data, _ = self.sock_recv.recvfrom(1024)
+                if data:
+                    parts = data.decode().split('|')
+                    if len(parts) == 3:
+                        beacon_id, sender_id, messaggio = parts
+                        async with self.lock:
+                            if beacon_id == self.current_beacon and sender_id != self.sender_id:
+                                self.elabora_messaggio(messaggio)
+            except socket.timeout:
+                await asyncio.sleep(0.1)
+            except asyncio.CancelledError:
+                break
+            except:
+                await asyncio.sleep(0.1)
+
+    def elabora_messaggio(self, messaggio):
+        print(f"Messaggio ricevuto: {messaggio}")
+
+    async def monitor_status(self):
+        while self.running:
+            async with self.lock:
+                status = self.current_beacon or "Nessun beacon"
+            print(f"\rStato: {status}", end='')
+            await asyncio.sleep(1)
 
 async def main():
     commander = BeaconCommander()
-    task1 = asyncio.create_task(commander.scan_beacons())
-    task2 = asyncio.create_task(commander.broadcast_message())
-
     try:
-        await asyncio.gather(task1, task2)
-    except KeyboardInterrupt:
-        print("[INTERRUZIONE] Ricevuto CTRL+C, arresto in corso...")
+        await asyncio.gather(
+            commander.scan_beacons(),
+            commander.broadcast_message(),
+            commander.listen_for_messages(),
+            commander.monitor_status(),
+            return_exceptions=True
+        )
     finally:
         commander.stop()
-        print("[FINE] Programma terminato.")
+        print("\nUscita.")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        pass
