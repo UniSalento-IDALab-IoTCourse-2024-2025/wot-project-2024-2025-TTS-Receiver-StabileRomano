@@ -70,17 +70,23 @@ class BeaconCommander:
                 if found:
                     found.sort(key=lambda x: x[1], reverse=True)
                     closest = found[0][0]
+
+                    print(f"[SCANSIONE] Beacon trovati: {found}")
+                    print(f"[SCANSIONE] Beacon più vicino: {closest}")
+
                     async with self.lock:
                         if closest != self.current_beacon:
                             self.current_beacon = closest
                 else:
+                    print("[SCANSIONE] Nessun beacon rilevato.")
                     async with self.lock:
                         self.current_beacon = None
 
                 await asyncio.sleep(SCAN_INTERVAL)
             except asyncio.CancelledError:
                 break
-            except:
+            except Exception as e:
+                print(f"[ERRORE] Durante la scansione: {e}")
                 await asyncio.sleep(SCAN_INTERVAL)
 
     async def broadcast_message(self):
@@ -90,6 +96,22 @@ class BeaconCommander:
                     msg = f"{self.current_beacon}|{self.sender_id}|{MESSAGGIO_PERSONALIZZATO}"
                     try:
                         self.sock_send.sendto(msg.encode(), (BROADCAST_IP, UDP_PORT))
-                    except:
-                        pass
+                    except Exception as e:
+                        print(f"[ERRORE] Durante il broadcast: {e}")
             await asyncio.sleep(BROADCAST_INTERVAL)
+
+async def main():
+    commander = BeaconCommander()
+    task1 = asyncio.create_task(commander.scan_beacons())
+    task2 = asyncio.create_task(commander.broadcast_message())
+
+    try:
+        await asyncio.gather(task1, task2)
+    except KeyboardInterrupt:
+        print("[INTERRUZIONE] Ricevuto CTRL+C, arresto in corso...")
+    finally:
+        commander.stop()
+        print("[FINE] Programma terminato.")
+
+if __name__ == "__main__":
+    asyncio.run(main())
