@@ -4,6 +4,7 @@ import socket
 import signal
 import sys
 import pyttsx3
+import netifaces  # Aggiunto per ottenere gli IP locali
 from datetime import datetime
 
 BEACONS = {
@@ -42,15 +43,39 @@ class BeaconListener:
     def __init__(self):
         self.running = True
         self.current_beacon = None
+        self.local_ips = self._get_local_ips()  # Ottieni gli IP locali
 
         # Configurazione socket UDP
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(('', UDP_PORT))
+        self.sock.settimeout(0.1)  # Timeout per evitare blocchi
 
         # Gestione segnali
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
+
+    def _get_local_ips(self):
+        """Restituisce una lista di tutti gli indirizzi IP locali"""
+        ips = []
+        try:
+            interfaces = netifaces.interfaces()
+            for interface in interfaces:
+                if interface == 'lo':
+                    continue
+                addrs = netifaces.ifaddresses(interface)
+                if netifaces.AF_INET in addrs:
+                    for addr_info in addrs[netifaces.AF_INET]:
+                        ips.append(addr_info['addr'])
+                if netifaces.AF_INET6 in addrs:
+                    for addr_info in addrs[netifaces.AF_INET6]:
+                        ip = addr_info['addr'].split('%')[0]
+                        ips.append(ip)
+            ips.extend(['127.0.0.1', '::1'])
+        except Exception as e:
+            print(f"Errore ottenimento IP locali: {e}")
+            ips = ['127.0.0.1', '::1']
+        return ips
 
     def signal_handler(self, sig, frame):
         print("\nArresto in corso...")
@@ -81,17 +106,23 @@ class BeaconListener:
         while self.running:
             try:
                 data, addr = self.sock.recvfrom(1024)
-                if data and self.current_beacon:
-                    parts = data.decode().split('|')
-                    if len(parts) == 2:
-                        beacon_id, messaggio = parts
-                        if beacon_id == self.current_beacon:
-                            print(f"\n[BEACON {beacon_id}] Messaggio: '{messaggio}'")
-                            tts_da_stringa(messaggio)
+                if data:
+                    # Filtra messaggi da IP locali
+                    if addr[0] in self.local_ips:
+                        continue
+
+                    if self.current_beacon:
+                        parts = data.decode().split('|')
+                        if len(parts) == 2:
+                            beacon_id, messaggio = parts
+                            if beacon_id == self.current_beacon:
+                                print(f"\n[BEACON {beacon_id}] Messaggio: '{messaggio}'")
+                                tts_da_stringa(messaggio)
             except socket.timeout:
                 await asyncio.sleep(0.1)
             except Exception as e:
-                print(f"Errore ricezione: {e}")
+                if self.running:
+                    print(f"Errore ricezione: {e}")
 
     async def scan_beacons(self):
         while self.running:
@@ -100,7 +131,6 @@ class BeaconListener:
                 try:
                     devices = await BleakScanner.discover(timeout=1.5)
                 except Exception as e:
-                    # Gestione specifica dell'errore "Operation already in progress"
                     if "Operation already in progress" in str(e):
                         print("Scansione già in corso, attendo...")
                         await asyncio.sleep(SCAN_INTERVAL)
@@ -132,7 +162,7 @@ class BeaconListener:
 
                 await asyncio.sleep(SCAN_INTERVAL)
             except Exception as e:
-                if self.running:  # Evita messaggi durante la chiusura
+                if self.running:
                     print(f"Errore scansione: {e}")
                 await asyncio.sleep(SCAN_INTERVAL)
 
