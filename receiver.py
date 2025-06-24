@@ -4,7 +4,7 @@ import socket
 import signal
 import sys
 import pyttsx3
-from datetime import datetime  # Aggiunto per logging
+from datetime import datetime
 
 BEACONS = {
     "C1:4F:64:D9:F2:80": "014522",
@@ -15,7 +15,7 @@ BEACONS = {
 
 UDP_PORT = 5005
 SCAN_INTERVAL = 5  # Secondi tra le scansioni BLE
-LOG_FILE = "beacon_status.log"  # Aggiunto file di log
+LOG_FILE = "beacon_status.log"
 
 # Inizializzazione motore TTS
 try:
@@ -60,7 +60,6 @@ class BeaconListener:
             tts_engine.stop()
 
     def update_beacon_log(self, beacon_id, rssi):
-        """Scrive lo stato corrente del beacon nel file di log"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         status_line = f"{timestamp} - Beacon attivo: {beacon_id} (RSSI: {rssi} dBm)\n"
         try:
@@ -70,7 +69,6 @@ class BeaconListener:
             print(f"Errore salvataggio log: {e}")
 
     def clear_beacon_log(self):
-        """Pulisce il file di log quando nessun beacon è rilevato"""
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         status_line = f"{timestamp} - Nessun beacon rilevato\n"
         try:
@@ -98,9 +96,18 @@ class BeaconListener:
     async def scan_beacons(self):
         while self.running:
             try:
-                devices = await BleakScanner.discover(timeout=1.5)
-                found_beacons = []
+                print("Avvio scansione...")
+                try:
+                    devices = await BleakScanner.discover(timeout=1.5)
+                except Exception as e:
+                    # Gestione specifica dell'errore "Operation already in progress"
+                    if "Operation already in progress" in str(e):
+                        print("Scansione già in corso, attendo...")
+                        await asyncio.sleep(SCAN_INTERVAL)
+                        continue
+                    raise
 
+                found_beacons = []
                 for d in devices:
                     if d.address in BEACONS:
                         beacon_id = BEACONS[d.address]
@@ -125,7 +132,8 @@ class BeaconListener:
 
                 await asyncio.sleep(SCAN_INTERVAL)
             except Exception as e:
-                print(f"Errore scansione: {e}")
+                if self.running:  # Evita messaggi durante la chiusura
+                    print(f"Errore scansione: {e}")
                 await asyncio.sleep(SCAN_INTERVAL)
 
 
