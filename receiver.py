@@ -3,10 +3,9 @@ from bleak import BleakScanner
 import socket
 import signal
 import sys
-import uuid
-import platform
+import pyttsx3
+from datetime import datetime  # Aggiunto per logging
 
-#  Configurazione beacon
 BEACONS = {
     "C1:4F:64:D9:F2:80": "014522",
     "C0:7E:31:1C:E3:A9": "014573",
@@ -15,131 +14,128 @@ BEACONS = {
 }
 
 UDP_PORT = 5005
-SCAN_INTERVAL = 15
-BROADCAST_INTERVAL = 5
+SCAN_INTERVAL = 5  # Secondi tra le scansioni BLE
+LOG_FILE = "beacon_status.log"  # Aggiunto file di log
 
-#  Rileva il sistema operativo
-if platform.system() == "Windows":
-    MESSAGGIO_PERSONALIZZATO = "Sono il Windows"
-    BROADCAST_IP = "192.168.1.255"
-else:
-    MESSAGGIO_PERSONALIZZATO = "Sono il Raspberry"
-    BROADCAST_IP = "<broadcast>"
+# Inizializzazione motore TTS
+try:
+    tts_engine = pyttsx3.init('espeak')
+    tts_engine.setProperty('rate', 130)
+    tts_engine.setProperty('volume', 1.0)
+    print("Motore TTS inizializzato")
+except Exception as e:
+    print(f"Errore inizializzazione TTS: {e}")
+    tts_engine = None
 
-class BeaconCommander:
+
+def tts_da_stringa(testo):
+    if not tts_engine:
+        return
+    try:
+        tts_engine.say(testo)
+        tts_engine.runAndWait()
+    except Exception as e:
+        print(f"Errore sintesi vocale: {e}")
+
+
+class BeaconListener:
     def __init__(self):
         self.running = True
         self.current_beacon = None
-        self.lock = asyncio.Lock()
-        self.sender_id = str(uuid.uuid4())[:8]
 
-        self.sock_send = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock_send.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+        # Configurazione socket UDP
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.sock.bind(('', UDP_PORT))
 
-        self.sock_recv = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock_recv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.sock_recv.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        self.sock_recv.bind(('0.0.0.0', UDP_PORT))
-        self.sock_recv.settimeout(0.1)
-
+        # Gestione segnali
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
 
     def signal_handler(self, sig, frame):
+        print("\nArresto in corso...")
         self.running = False
+        self.sock.close()
+        if tts_engine:
+            tts_engine.stop()
 
-    def stop(self):
+    def update_beacon_log(self, beacon_id, rssi):
+        """Scrive lo stato corrente del beacon nel file di log"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        status_line = f"{timestamp} - Beacon attivo: {beacon_id} (RSSI: {rssi} dBm)\n"
         try:
-            self.sock_recv.close()
-        except:
-            pass
+            with open(LOG_FILE, 'w') as f:
+                f.write(status_line)
+        except Exception as e:
+            print(f"Errore salvataggio log: {e}")
+
+    def clear_beacon_log(self):
+        """Pulisce il file di log quando nessun beacon è rilevato"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        status_line = f"{timestamp} - Nessun beacon rilevato\n"
         try:
-            self.sock_send.close()
-        except:
-            pass
+            with open(LOG_FILE, 'w') as f:
+                f.write(status_line)
+        except Exception as e:
+            print(f"Errore salvataggio log: {e}")
+
+    async def listen_for_broadcasts(self):
+        while self.running:
+            try:
+                data, addr = self.sock.recvfrom(1024)
+                if data and self.current_beacon:
+                    parts = data.decode().split('|')
+                    if len(parts) == 2:
+                        beacon_id, messaggio = parts
+                        if beacon_id == self.current_beacon:
+                            print(f"\n[BEACON {beacon_id}] Messaggio: '{messaggio}'")
+                            tts_da_stringa(messaggio)
+            except socket.timeout:
+                await asyncio.sleep(0.1)
+            except Exception as e:
+                print(f"Errore ricezione: {e}")
 
     async def scan_beacons(self):
         while self.running:
             try:
-                devices = await BleakScanner.discover(timeout=1.5, return_adv=True)
-                found = []
+                devices = await BleakScanner.discover(timeout=1.5)
+                found_beacons = []
 
-                for d, adv in devices.values():
-                    if d.address in BEACONS or (d.name and d.name.startswith("BlueUp-")):
-                        beacon_id = BEACONS.get(d.address, "Sconosciuto")
-                        found.append((beacon_id, adv.rssi))
+                for d in devices:
+                    if d.address in BEACONS:
+                        beacon_id = BEACONS[d.address]
+                        found_beacons.append((beacon_id, d.rssi))
 
-                if found:
-                    found.sort(key=lambda x: x[1], reverse=True)
-                    closest = found[0][0]
-                    async with self.lock:
-                        if closest != self.current_beacon:
-                            self.current_beacon = closest
+                if found_beacons:
+                    found_beacons.sort(key=lambda x: x[1], reverse=True)
+                    closest_beacon = found_beacons[0][0]
+                    closest_rssi = found_beacons[0][1]
+
+                    if closest_beacon != self.current_beacon:
+                        print(f"\nBeacon vicino: {closest_beacon} (RSSI: {closest_rssi} dBm)")
+                        self.current_beacon = closest_beacon
+                        self.update_beacon_log(closest_beacon, closest_rssi)
                 else:
-                    async with self.lock:
+                    if self.current_beacon is not None:
+                        print("\nNessun beacon rilevato")
                         self.current_beacon = None
+                        self.clear_beacon_log()
+                    else:
+                        self.clear_beacon_log()
 
                 await asyncio.sleep(SCAN_INTERVAL)
-            except asyncio.CancelledError:
-                break
-            except:
+            except Exception as e:
+                print(f"Errore scansione: {e}")
                 await asyncio.sleep(SCAN_INTERVAL)
 
-    async def broadcast_message(self):
-        while self.running:
-            async with self.lock:
-                if self.current_beacon:
-                    msg = f"{self.current_beacon}|{self.sender_id}|{MESSAGGIO_PERSONALIZZATO}"
-                    try:
-                        self.sock_send.sendto(msg.encode(), (BROADCAST_IP, UDP_PORT))
-                    except:
-                        pass
-            await asyncio.sleep(BROADCAST_INTERVAL)
-
-    async def listen_for_messages(self):
-        while self.running:
-            try:
-                data, _ = self.sock_recv.recvfrom(1024)
-                if data:
-                    parts = data.decode().split('|')
-                    if len(parts) == 3:
-                        beacon_id, sender_id, messaggio = parts
-                        async with self.lock:
-                            if beacon_id == self.current_beacon and sender_id != self.sender_id:
-                                self.elabora_messaggio(messaggio)
-            except socket.timeout:
-                await asyncio.sleep(0.1)
-            except asyncio.CancelledError:
-                break
-            except:
-                await asyncio.sleep(0.1)
-
-    def elabora_messaggio(self, messaggio):
-        print(f"Messaggio ricevuto: {messaggio}")
-
-    async def monitor_status(self):
-        while self.running:
-            async with self.lock:
-                status = self.current_beacon or "Nessun beacon"
-            print(f"\rStato: {status}", end='')
-            await asyncio.sleep(1)
 
 async def main():
-    commander = BeaconCommander()
-    try:
-        await asyncio.gather(
-            commander.scan_beacons(),
-            commander.broadcast_message(),
-            commander.listen_for_messages(),
-            commander.monitor_status(),
-            return_exceptions=True
-        )
-    finally:
-        commander.stop()
-        print("\nUscita.")
+    listener = BeaconListener()
+    await asyncio.gather(
+        listener.scan_beacons(),
+        listener.listen_for_broadcasts()
+    )
+
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except KeyboardInterrupt:
-        pass
+    asyncio.run(main())
