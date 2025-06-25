@@ -5,8 +5,8 @@ import signal
 import sys
 import pyttsx3
 import netifaces
-import threading  # Aggiunto per il thread TTS
-import queue  # Aggiunto per la coda TTS
+import threading
+import queue
 from datetime import datetime
 
 BEACONS = {
@@ -27,7 +27,6 @@ tts_thread_running = True
 
 
 def tts_worker():
-    """Worker thread per gestire le richieste TTS"""
     global tts_engine
     while tts_thread_running:
         try:
@@ -36,7 +35,6 @@ def tts_worker():
                 continue
 
             try:
-                # Riavvia il motore TTS prima di ogni messaggio
                 if tts_engine:
                     tts_engine.stop()
                     tts_engine = None
@@ -49,6 +47,12 @@ def tts_worker():
                 tts_engine.runAndWait()
             except Exception as e:
                 print(f"Errore TTS: {e}")
+                try:
+                    if tts_engine:
+                        tts_engine.stop()
+                except:
+                    pass
+                tts_engine = None
         except queue.Empty:
             continue
         except Exception as e:
@@ -56,7 +60,6 @@ def tts_worker():
 
 
 def tts_da_stringa(testo):
-    """Aggiunge il testo alla coda TTS"""
     if not testo:
         return
     try:
@@ -112,6 +115,13 @@ class BeaconListener:
         global tts_thread_running
         tts_thread_running = False
         self.running = False
+
+        try:
+            if tts_engine:
+                tts_engine.stop()
+        except:
+            pass
+
         self.sock.close()
 
     def update_beacon_log(self, beacon_id, rssi):
@@ -160,9 +170,14 @@ class BeaconListener:
                 try:
                     devices = await BleakScanner.discover(timeout=1.5)
                 except Exception as e:
-                    if "Operation already in progress" in str(e):
+                    error_msg = str(e)
+                    if "Operation already in progress" in error_msg:
                         print("Scansione già in corso, attendo...")
                         await asyncio.sleep(SCAN_INTERVAL)
+                        continue
+                    elif "No power bluetooth adapter found" in error_msg:
+                        print("Adapter Bluetooth non disponibile, riprovo...")
+                        await asyncio.sleep(SCAN_INTERVAL * 2)
                         continue
                     raise
 
@@ -209,5 +224,11 @@ if __name__ == "__main__":
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\nInterruzione da tastiera")
+    except Exception as e:
+        print(f"Errore: {e}")
     finally:
+        # Segnala al thread TTS di terminare
+        tts_thread_running = False
+        if tts_thread.is_alive():
+            tts_thread.join(timeout=1)
         print("Uscita...")
