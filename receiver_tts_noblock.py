@@ -4,7 +4,9 @@ import socket
 import signal
 import sys
 import pyttsx3
-import netifaces  # Aggiunto per ottenere gli IP locali
+import netifaces
+import threading  # Aggiunto per il thread TTS
+import queue  # Aggiunto per la coda TTS
 from datetime import datetime
 
 BEACONS = {
@@ -18,45 +20,73 @@ UDP_PORT = 5005
 SCAN_INTERVAL = 5  # Secondi tra le scansioni BLE
 LOG_FILE = "beacon_status.log"
 
-# Inizializzazione motore TTS
-try:
-    tts_engine = pyttsx3.init('espeak')
-    tts_engine.setProperty('rate', 130)
-    tts_engine.setProperty('volume', 1.0)
-    print("Motore TTS inizializzato")
-except Exception as e:
-    print(f"Errore inizializzazione TTS: {e}")
-    tts_engine = None
+# Variabili globali per il TTS
+tts_engine = None
+tts_queue = queue.Queue()
+tts_thread_running = True
+
+
+def tts_worker():
+    """Worker thread per gestire le richieste TTS"""
+    global tts_engine
+    while tts_thread_running:
+        try:
+            testo = tts_queue.get(timeout=0.5)
+            if testo is None:
+                continue
+
+            try:
+                # Riavvia il motore TTS prima di ogni messaggio
+                if tts_engine:
+                    tts_engine.stop()
+                    tts_engine = None
+
+                tts_engine = pyttsx3.init('espeak')
+                tts_engine.setProperty('rate', 130)
+                tts_engine.setProperty('volume', 1.0)
+
+                tts_engine.say(testo)
+                tts_engine.runAndWait()
+            except Exception as e:
+                print(f"Errore TTS: {e}")
+        except queue.Empty:
+            continue
+        except Exception as e:
+            print(f"Errore nel worker TTS: {e}")
 
 
 def tts_da_stringa(testo):
-    if not tts_engine:
+    """Aggiunge il testo alla coda TTS"""
+    if not testo:
         return
     try:
-        tts_engine.say(testo)
-        tts_engine.runAndWait()
+        tts_queue.put(testo)
     except Exception as e:
-        print(f"Errore sintesi vocale: {e}")
+        print(f"Errore durante l'invio alla coda TTS: {e}")
+
+
+# Avvia il worker TTS
+tts_thread = threading.Thread(target=tts_worker, daemon=True)
+tts_thread.start()
 
 
 class BeaconListener:
     def __init__(self):
         self.running = True
         self.current_beacon = None
-        self.local_ips = self._get_local_ips()  # Ottieni gli IP locali
+        self.local_ips = self._get_local_ips()
 
         # Configurazione socket UDP
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.sock.bind(('', UDP_PORT))
-        self.sock.settimeout(0.1)  # Timeout per evitare blocchi
+        self.sock.settimeout(0.1)
 
         # Gestione segnali
         signal.signal(signal.SIGINT, self.signal_handler)
         signal.signal(signal.SIGTERM, self.signal_handler)
 
     def _get_local_ips(self):
-        """Restituisce una lista di tutti gli indirizzi IP locali"""
         ips = []
         try:
             interfaces = netifaces.interfaces()
@@ -79,10 +109,10 @@ class BeaconListener:
 
     def signal_handler(self, sig, frame):
         print("\nArresto in corso...")
+        global tts_thread_running
+        tts_thread_running = False
         self.running = False
         self.sock.close()
-        if tts_engine:
-            tts_engine.stop()
 
     def update_beacon_log(self, beacon_id, rssi):
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -107,7 +137,6 @@ class BeaconListener:
             try:
                 data, addr = self.sock.recvfrom(1024)
                 if data:
-                    # Filtra messaggi da IP locali
                     if addr[0] in self.local_ips:
                         continue
 
@@ -176,4 +205,9 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        print("\nInterruzione da tastiera")
+    finally:
+        print("Uscita...")
