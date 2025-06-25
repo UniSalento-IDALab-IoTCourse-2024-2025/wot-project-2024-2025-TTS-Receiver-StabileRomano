@@ -43,6 +43,13 @@ def tts_worker():
                 tts_engine.setProperty('rate', 130)
                 tts_engine.setProperty('volume', 1.0)
 
+                # Configura voce italiana se disponibile
+                voices = tts_engine.getProperty('voices')
+                for voice in voices:
+                    if 'italian' in voice.id.lower() or 'italian' in voice.name.lower():
+                        tts_engine.setProperty('voice', voice.id)
+                        break
+
                 tts_engine.say(testo)
                 tts_engine.runAndWait()
             except Exception as e:
@@ -77,6 +84,7 @@ class BeaconListener:
     def __init__(self):
         self.running = True
         self.current_beacon = None
+        self.lock = asyncio.Lock()  # Aggiunto lock per thread safety
         self.local_ips = self._get_local_ips()
 
         # Configurazione socket UDP
@@ -150,11 +158,14 @@ class BeaconListener:
                     if addr[0] in self.local_ips:
                         continue
 
-                    if self.current_beacon:
+                    async with self.lock:  # Usa il lock per thread safety
+                        current_beacon = self.current_beacon
+
+                    if current_beacon:
                         parts = data.decode().split('|')
                         if len(parts) == 2:
                             beacon_id, messaggio = parts
-                            if beacon_id == self.current_beacon:
+                            if beacon_id == current_beacon:
                                 print(f"\n[BEACON {beacon_id}] Messaggio: '{messaggio}'")
                                 tts_da_stringa(messaggio)
             except socket.timeout:
@@ -187,22 +198,23 @@ class BeaconListener:
                         beacon_id = BEACONS[d.address]
                         found_beacons.append((beacon_id, d.rssi))
 
-                if found_beacons:
-                    found_beacons.sort(key=lambda x: x[1], reverse=True)
-                    closest_beacon = found_beacons[0][0]
-                    closest_rssi = found_beacons[0][1]
+                async with self.lock:  # Usa il lock per thread safety
+                    if found_beacons:
+                        found_beacons.sort(key=lambda x: x[1], reverse=True)
+                        closest_beacon = found_beacons[0][0]
+                        closest_rssi = found_beacons[0][1]
 
-                    if closest_beacon != self.current_beacon:
-                        print(f"\nBeacon vicino: {closest_beacon} (RSSI: {closest_rssi} dBm)")
-                        self.current_beacon = closest_beacon
-                        self.update_beacon_log(closest_beacon, closest_rssi)
-                else:
-                    if self.current_beacon is not None:
-                        print("\nNessun beacon rilevato")
-                        self.current_beacon = None
-                        self.clear_beacon_log()
+                        if closest_beacon != self.current_beacon:
+                            print(f"\nBeacon vicino: {closest_beacon} (RSSI: {closest_rssi} dBm)")
+                            self.current_beacon = closest_beacon
+                            self.update_beacon_log(closest_beacon, closest_rssi)
                     else:
-                        self.clear_beacon_log()
+                        if self.current_beacon is not None:
+                            print("\nNessun beacon rilevato")
+                            self.current_beacon = None
+                            self.clear_beacon_log()
+                        else:
+                            self.clear_beacon_log()
 
                 await asyncio.sleep(SCAN_INTERVAL)
             except Exception as e:
