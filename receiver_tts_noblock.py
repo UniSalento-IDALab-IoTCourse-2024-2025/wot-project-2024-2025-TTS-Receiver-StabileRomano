@@ -84,7 +84,7 @@ class BeaconListener:
     def __init__(self):
         self.running = True
         self.current_beacon = None
-        self.lock = asyncio.Lock()  # Aggiunto lock per thread safety
+        self.lock = asyncio.Lock()
         self.local_ips = self._get_local_ips()
 
         # Configurazione socket UDP
@@ -158,7 +158,7 @@ class BeaconListener:
                     if addr[0] in self.local_ips:
                         continue
 
-                    async with self.lock:  # Usa il lock per thread safety
+                    async with self.lock:
                         current_beacon = self.current_beacon
 
                     if current_beacon:
@@ -179,7 +179,8 @@ class BeaconListener:
             try:
                 print("Avvio scansione...")
                 try:
-                    devices = await BleakScanner.discover(timeout=1.5)
+                    # Utilizza return_adv per ottenere i dati di advertising
+                    devices = await BleakScanner.discover(timeout=1.5, return_adv=True)
                 except Exception as e:
                     error_msg = str(e)
                     if "Operation already in progress" in error_msg:
@@ -193,12 +194,15 @@ class BeaconListener:
                     raise
 
                 found_beacons = []
-                for d in devices:
-                    if d.address in BEACONS:
-                        beacon_id = BEACONS[d.address]
-                        found_beacons.append((beacon_id, d.rssi))
+                # Itera su tutti i dispositivi con i loro dati di advertising
+                for d, adv in devices.values():
+                    # Supporta sia indirizzi MAC che nomi BlueUp
+                    if d.address in BEACONS or (d.name and d.name.startswith("BlueUp-")):
+                        beacon_id = BEACONS.get(d.address, "Sconosciuto")
+                        rssi = adv.rssi  # Ottieni RSSI dai dati di advertising
+                        found_beacons.append((beacon_id, rssi))
 
-                async with self.lock:  # Usa il lock per thread safety
+                async with self.lock:
                     if found_beacons:
                         found_beacons.sort(key=lambda x: x[1], reverse=True)
                         closest_beacon = found_beacons[0][0]
