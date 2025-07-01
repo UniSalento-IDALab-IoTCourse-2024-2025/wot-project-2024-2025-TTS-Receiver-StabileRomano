@@ -10,6 +10,7 @@ import threading
 import queue
 import time
 
+#DICHIARATO IL DIZIONARIO DEI BEACON DA CONSIDERARE
 BEACONS = {
     "C1:4F:64:D9:F2:80": "014522",
     "C0:7E:31:1C:E3:A9": "014573",
@@ -19,17 +20,18 @@ BEACONS = {
 
 UDP_PORT = 5005
 SCAN_INTERVAL = 5  # Secondi tra le scansioni BLE
-LOG_FILE = "beacon_status.log"
-RECEIVED_FILE = "messagges.log"
+LOG_FILE = "beacon_status.log" #QUI VENGONO SALVATI I BEACON RILEVATI
+RECEIVED_FILE = "messagges.log" #QUI VENGONO SALVATI I MESSAGGI RICEVUTI
 
-# Variabili globali per il TTS
+# Variabili globali per il TTS (Istanza motore tts, cosa thread-safe, flag per far
+# girare o fermare il thread)
 tts_engine = None
 tts_queue = queue.Queue()
 tts_thread_running = True
 
 
 def tts_worker():
-    """Worker thread per gestire le richieste TTS"""
+    #Worker thread per gestire le richieste TTS, preleva i messaggi dalla coda tts
     global tts_engine
     while tts_thread_running:
         try:
@@ -38,7 +40,7 @@ def tts_worker():
                 continue
 
             try:
-                # Riavvia sempre il motore TTS prima di ogni messaggio
+                # Riavvia sempre il motore TTS prima di ogni messaggio per evitare blocchi
                 if tts_engine:
                     tts_engine.stop()
                     tts_engine = None
@@ -53,7 +55,7 @@ def tts_worker():
                     if 'italian' in voice.id.lower() or 'italian' in voice.name.lower():
                         tts_engine.setProperty('voice', voice.id)
                         break
-
+                #aggiunte delle virgole per non far mangiare parole al riproduttore vocale
                 testo = ",,,," + testo
                 tts_engine.say(testo)
                 tts_engine.runAndWait()
@@ -74,7 +76,7 @@ def tts_worker():
 
 
 def tts_da_stringa(testo):
-    """Aggiunge il testo alla coda TTS"""
+    #Aggiunge il testo alla coda TTS
     if not testo:
         return
     try:
@@ -87,7 +89,7 @@ def tts_da_stringa(testo):
 tts_thread = threading.Thread(target=tts_worker, daemon=True)
 tts_thread.start()
 
-
+#Classe per scannerizzare i beacon
 class BeaconListener:
     def __init__(self):
         self.running = True
@@ -106,7 +108,7 @@ class BeaconListener:
         signal.signal(signal.SIGTERM, self.signal_handler)
 
     def signal_handler(self, sig, frame):
-        """Gestisce la chiusura pulita del programma"""
+        #Gestisce la chiusura pulita del programma
         print("\nRicevuto segnale di interruzione, arresto in corso...")
         global tts_thread_running
         tts_thread_running = False
@@ -124,6 +126,7 @@ class BeaconListener:
 
         sys.exit(0)
 
+    #ascolta messaggi UDP in arrivo
     async def listen_for_broadcasts(self):
         while self.running:
             try:
@@ -155,7 +158,8 @@ class BeaconListener:
                     print(f"Errore ricezione: {e}")
 
     def _get_local_ips(self):
-        """Restituisce una lista di tutti gli indirizzi IP locali (IPv4 e IPv6)"""
+        #Restituisce una lista di tutti gli indirizzi IP locali (IPv4 e IPv6)
+        #Serve a ignorare i messaggi inviati da sè stesso
         ips = []
         try:
             # Ottieni tutte le interfacce di rete
@@ -192,7 +196,7 @@ class BeaconListener:
         return ips
 
     def update_beacon_log(self, beacon_id, rssi):
-        """Scrive lo stato corrente del beacon nel file di log"""
+        #Scrive lo stato corrente del beacon nel file di log
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         status_line = f"{timestamp} - Beacon attivo: {beacon_id} (RSSI: {rssi} dBm)\n"
 
@@ -203,7 +207,7 @@ class BeaconListener:
             print(f"Errore durante il salvataggio del log: {e}")
 
     def clear_beacon_log(self):
-        """Pulisce il file di log quando nessun beacon è rilevato"""
+        #Pulisce il file di log quando nessun beacon è rilevato
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         status_line = f"{timestamp} - Nessun beacon rilevato\n"
 
